@@ -1,6 +1,8 @@
 import { Injectable, signal } from '@angular/core';
 import * as pdfjsLib from 'pdfjs-dist';
 import { Signature } from '../models/signature.model';
+import { PDFDocument } from 'pdf-lib';
+import { fabric } from 'fabric';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
@@ -9,6 +11,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.j
 })
 export class PdfService {
   private pdfDoc: any;
+  private _pdfBytes: ArrayBuffer | null = null;
   private signatures = signal<Signature[]>([]);
   currentPage = signal(1);
   totalPages = signal(0);
@@ -16,10 +19,17 @@ export class PdfService {
 
   async loadPdf(file: File) {
     const arrayBuffer = await file.arrayBuffer();
+    // Clone the ArrayBuffer
+    this._pdfBytes = arrayBuffer.slice(0);
     this.pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     this.totalPages.set(this.pdfDoc.numPages);
     this.currentPage.set(1);
     this.pdfLoaded.set(true);
+  }
+
+  async pdfBytes(): Promise<ArrayBuffer> {
+    if (!this._pdfBytes) throw new Error('No PDF loaded');
+    return this._pdfBytes;
   }
 
   async getPageAsCanvas(pageNumber: number): Promise<HTMLCanvasElement> {
@@ -55,5 +65,40 @@ export class PdfService {
 
   getSignatures() {
     return this.signatures;
+  }
+
+  async generateModifiedPdf(fabricCanvas: fabric.Canvas): Promise<Blob> {
+    // Load the existing PDF document
+    const pdfDoc = await PDFDocument.load(await this.pdfBytes());
+    const pages = pdfDoc.getPages();
+
+    // For each page with annotations
+    const currentPage = pages[this.currentPage() - 1];
+    
+    // Convert the fabric canvas to an image
+    const canvasDataUrl = fabricCanvas.toDataURL({ format: 'png' });
+    const imageBytes = await fetch(canvasDataUrl).then(res => res.arrayBuffer());
+    
+    // Embed the image into the PDF
+    const image = await pdfDoc.embedPng(imageBytes);
+    
+    // Get page dimensions
+    const { width, height } = currentPage.getSize();
+    
+    // Draw the annotations on top of the PDF page
+    currentPage.drawImage(image, {
+      x: 0,
+      y: 0,
+      width,
+      height,
+    });
+
+    // Save the modified PDF
+    const modifiedPdfBytes = await pdfDoc.save();
+    return new Blob([modifiedPdfBytes], { type: 'application/pdf' });
+  }
+
+  removeSignature(id: string) {
+    this.signatures.update(sigs => sigs.filter(sig => sig.id !== id));
   }
 }

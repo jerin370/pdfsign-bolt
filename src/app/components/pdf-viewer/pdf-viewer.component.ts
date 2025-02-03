@@ -14,6 +14,7 @@ import { SignatureDialogComponent } from '../signature-dialog/signature-dialog.c
 import { PdfService } from '../../services/pdf.service';
 import { fabric } from 'fabric';
 import { v4 as uuidv4 } from 'uuid';
+import { saveAs } from 'file-saver';
 
 @Component({
   selector: 'app-root',
@@ -23,7 +24,6 @@ import { v4 as uuidv4 } from 'uuid';
     MatButtonModule,
     MatIconModule,
     MatDialogModule,
-    SignatureDialogComponent,
   ],
   template: `
     <div class="pdf-container">
@@ -34,6 +34,20 @@ import { v4 as uuidv4 } from 'uuid';
         </button>
         <button mat-raised-button (click)="uploadImage()">
           Add Image
+        </button>
+        <button mat-raised-button color="accent" (click)="saveAndDownload()" [disabled]="!pdfService.pdfLoaded()">
+          <mat-icon>save_alt</mat-icon>
+          Save PDF
+        </button>
+        <button 
+          mat-raised-button 
+          color="warn" 
+          (click)="deleteSelected()"
+          [disabled]="!selectedObject"
+          *ngIf="pdfService.pdfLoaded()"
+        >
+          <mat-icon>delete</mat-icon>
+          Delete Selected
         </button>
       </div>
       
@@ -80,6 +94,9 @@ import { v4 as uuidv4 } from 'uuid';
       align-items: center;
       justify-content: center;
     }
+    .toolbar button mat-icon {
+      margin-right: 4px;
+    }
   `,
   ],
 })
@@ -88,6 +105,7 @@ export class PdfViewerComponent implements AfterViewInit {
   annotationCanvasRef!: ElementRef<HTMLCanvasElement>;
   @ViewChild('pdfCanvas') pdfCanvasRef!: ElementRef<HTMLCanvasElement>;
   private fabricCanvas!: fabric.Canvas;
+  selectedObject: fabric.Object | null = null;
 
   constructor(private dialog: MatDialog, public pdfService: PdfService) {
     effect(() => {
@@ -99,6 +117,7 @@ export class PdfViewerComponent implements AfterViewInit {
 
   ngAfterViewInit() {
     this.initializeFabricCanvas();
+    this.setupKeyboardEvents();
   }
 
   private initializeFabricCanvas() {
@@ -109,6 +128,41 @@ export class PdfViewerComponent implements AfterViewInit {
       width: 800,
       height: 1000,
     });
+
+    // Add selection event listener
+    this.fabricCanvas.on('selection:created', (e) => {
+      this.selectedObject = e.selected?.[0] || null;
+    });
+
+    this.fabricCanvas.on('selection:cleared', () => {
+      this.selectedObject = null;
+    });
+
+    this.fabricCanvas.on('selection:updated', (e) => {
+      this.selectedObject = e.selected?.[0] || null;
+    });
+  }
+
+  private setupKeyboardEvents() {
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        this.deleteSelected();
+      }
+    });
+  }
+
+  deleteSelected() {
+    if (this.selectedObject) {
+      const objectId = this.selectedObject.data?.id;
+      this.fabricCanvas.remove(this.selectedObject);
+      
+      // Update signatures list if needed
+      if (objectId) {
+        this.pdfService.removeSignature(objectId);
+      }
+      
+      this.selectedObject = null;
+    }
   }
 
   async onFileSelected(event: Event) {
@@ -150,10 +204,15 @@ export class PdfViewerComponent implements AfterViewInit {
   private addSignatureToCanvas(dataUrl: string) {
     fabric.Image.fromURL(dataUrl, (img) => {
       img.scale(0.5);
+      // Add custom data to track signatures
+      img.data = {
+        id: uuidv4(),
+        type: 'signature'
+      };
       this.fabricCanvas.add(img);
 
       const signature = {
-        id: uuidv4(),
+        id: img.data.id,
         type: 'draw' as const,
         dataUrl,
         position: {
@@ -196,6 +255,25 @@ export class PdfViewerComponent implements AfterViewInit {
   nextPage() {
     if (this.pdfService.currentPage() < this.pdfService.totalPages()) {
       this.pdfService.currentPage.update((page) => page + 1);
+    }
+  }
+
+  async saveAndDownload() {
+    try {
+      // Get the modified PDF as a Blob
+      const modifiedPdfBlob = await this.pdfService.generateModifiedPdf(this.fabricCanvas);
+      
+      // Generate a default filename or use the original filename if available
+      const originalFileName = (document.querySelector('input[type="file"]') as HTMLInputElement)?.files?.[0]?.name;
+      const fileName = originalFileName 
+        ? `modified_${originalFileName}` 
+        : `modified_document_${new Date().toISOString()}.pdf`;
+
+      // Save the file
+      saveAs(modifiedPdfBlob, fileName);
+    } catch (error) {
+      console.error('Error saving PDF:', error);
+      // Here you might want to add proper error handling, like showing a snackbar or alert
     }
   }
 }
